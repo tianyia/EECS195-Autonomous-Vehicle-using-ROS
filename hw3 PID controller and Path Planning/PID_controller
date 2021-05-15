@@ -1,0 +1,194 @@
+#!/usr/bin/env python
+import rospy
+import std_msgs.msg
+from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Twist
+
+#mode 0 and 1 is tested and good to go if information on reference point is correct
+import tf
+import random
+import numpy as np
+import math
+from math import sqrt, sin, cos, atan2, ceil, floor
+
+#reference point
+def update_reference(data):
+	global target_x
+	global target_y
+	global target_theta
+	global mode
+	target_x = data.data[0]
+	target_y = data.data[1]
+	target_theta = data.data[2]
+	mode = data.data[3]
+def update_pose(data):
+	global x
+	global y
+	global theta
+	x = data.pose.position.x
+	y = data.pose.position.y
+
+	explicit_quat = [data.pose.orientation.x, data.pose.orientation.y,
+		 				data.pose.orientation.z, data.pose.orientation.w]
+	euler = tf.transformations.euler_from_quaternion(explicit_quat)
+	theta = euler[2]
+
+
+def talker():
+	#publish to channel
+	pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+
+	#initial node
+	rospy.init_node('PID_controller', anonymous=True)
+
+	#subscribe to channels
+	rospy.Subscriber('/reference_point', std_msgs.msg.Float64MultiArray, update_reference)# x,y,theta,mode
+	rospy.Subscriber('/slam_out_pose', PoseStamped, update_pose)
+
+	#define variables
+	AKp = 0.2
+	AKi = 0.01
+	AKd = 0.05
+	VKp = 0.2
+	VKi = 0.01
+	VKd = 0.05
+	rate_number = 1
+	rate = rospy.Rate(rate_number)
+
+	
+	global target_x
+	global target_y
+	global target_theta
+	global mode
+	global x
+	global y
+	global theta
+
+	#target_x = float( raw_input("enter target_x:\n") )
+	#target_y = float( raw_input("enter target_y:\n") )
+	#target_theta = float( raw_input("enter target_theta:\n") )
+	#mode = float( raw_input("enter mode:\n") )
+
+	#main iteration
+	while not rospy.is_shutdown():
+
+		#print("target: x=", target_x, " y=", target_y, " theta=", target_theta, " mode=", mode)
+		#print("x=", x, " y=", y, " theta=", theta)
+		#print("error_angle1=", error_angle1, " error_distance=", error_distance, " error_angle2=", error_angle2)
+
+		if(mode == 1):
+
+			old_e_x = 0
+			old_e_z = 0
+			int_e_x = 0
+			int_e_z = 0
+			error_angle1 = atan2(target_y-y , target_x-x) - theta
+			error_distance = sqrt( (target_x-x)**2 + (target_y-y)**2 )
+			while(error_distance > 0.1):
+				e_x = error_distance
+				e_z = error_angle1
+
+				u = VKp*e_x + VKi*int_e_x + VKd*(e_x - old_e_x)
+				v = AKp*e_z + AKi*int_e_z + AKd*(e_z - old_e_z)
+				move_cmd = Twist()
+				move_cmd.linear.x = u
+				move_cmd.angular.z = v
+				pub.publish(move_cmd)
+				rospy.loginfo(move_cmd)
+
+
+				old_e_x = e_x
+				old_e_z = e_z
+				int_e_x += e_x
+				int_e_z += e_z
+				rate.sleep()
+				error_angle1 = atan2(target_y-y , target_x-x) - theta
+				error_distance = sqrt( (target_x-x)**2 + (target_y-y)**2 )
+
+			old_e = 0
+			int_e = 0
+			error_angle2 = target_theta - theta
+			while(abs(error_angle2) > 0.05):
+				print("in loop")
+				e = error_angle2
+
+				u = AKp*e + AKi*int_e + AKd*(e - old_e)
+				move_cmd = Twist()
+				move_cmd.angular.z = u
+				pub.publish(move_cmd)
+				rospy.loginfo(move_cmd)
+
+				old_e = e
+				int_e += e
+				rate.sleep()
+				error_angle2 = target_theta - theta
+
+		if(mode == 0):
+
+			old_e = 0
+			int_e = 0
+			error_angle1 = atan2(target_y-y , target_x-x) - theta
+			while(abs(error_angle1) > 0.05):
+				e = error_angle1
+
+				u = AKp*e + AKi*int_e + AKd*(e - old_e)
+				move_cmd = Twist()
+				move_cmd.angular.z = u
+				pub.publish(move_cmd)
+				rospy.loginfo(move_cmd)
+
+				old_e = e
+				int_e += e
+				rate.sleep()
+				error_angle1 = atan2(target_y-y , target_x-x) - theta
+
+			old_e = 0
+			int_e = 0
+			error_distance = sqrt( (target_x-x)**2 + (target_y-y)**2 )
+			while(error_distance > 0.1):
+				e = error_distance
+
+				u = VKp*e + VKi*int_e + VKd*(e - old_e)
+				move_cmd = Twist()
+				move_cmd.linear.x = u
+				pub.publish(move_cmd)
+				rospy.loginfo(move_cmd)
+
+				old_e = e
+				int_e += e
+				rate.sleep()
+				error_distance = sqrt( (target_x-x)**2 + (target_y-y)**2 )
+
+			old_e = 0
+			int_e = 0
+			error_angle2 = target_theta - theta
+			while(abs(error_angle2) > 0.05):
+				print(theta)
+				e = error_angle2
+
+				u = AKp*e + AKi*int_e + AKd*(e - old_e)
+				move_cmd = Twist()
+				move_cmd.angular.z = u
+				pub.publish(move_cmd)
+				rospy.loginfo(move_cmd)
+
+				old_e = e
+				int_e += e
+				rate.sleep()
+				error_angle2 = target_theta - theta
+
+		print("target: x=", target_x, " y=", target_y, " theta=", target_theta, " mode=", mode)
+		print("x=", x, " y=", y, " theta=", theta)
+		#break
+
+
+
+		
+
+
+
+if __name__ == '__main__':
+	try:
+		talker()
+	except rospy.ROSInterruptException:
+		pass
