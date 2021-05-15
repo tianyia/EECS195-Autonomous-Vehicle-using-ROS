@@ -1,0 +1,219 @@
+#!/usr/bin/env python
+import rospy
+import std_msgs.msg
+from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import OccupancyGrid
+
+
+import tf
+import random
+import numpy as np
+import math
+from math import sqrt, sin, cos, atan2, ceil, floor
+  
+class Node: 
+      
+    # Class to create nodes of linked list 
+    # constructor initializes node automatically 
+    def __init__(self,data,parent=None): 
+        self.name = data 
+        self.parent = parent
+
+#reference point
+def update_map(data):
+	global map_resolution
+	global map_width
+	global map_height
+	global map_origin
+	global map_data
+	map_resolution = data.info.resolution
+	map_width = data.info.width
+	map_height = data.info.height
+	map_origin = data.info.origin
+	map_data = data.data
+def update_pose(data):
+	global x
+	global y
+	global theta
+	x = data.pose.position.x
+	y = data.pose.position.y
+
+	explicit_quat = [data.pose.orientation.x, data.pose.orientation.y,
+		 				data.pose.orientation.z, data.pose.orientation.w]
+	euler = tf.transformations.euler_from_quaternion(explicit_quat)
+	theta = euler[2]
+def update_target(data):###
+	global target_x
+	global target_y
+	global target_theta
+	global mode
+	target_x = data.data[0]
+	target_y = data.data[1]
+	target_theta = data.data[2]
+	mode = data.data[3]
+
+def random_configuration():#OK and new configuration
+	global map_resolution
+	global map_width
+	global map_height
+	global map_origin
+	global map_data
+
+	threshold = 30
+	max_distance = 1
+
+	x_range = map_origin.position.x + map_height*map_resolution
+	y_range = map_origin.position.y + map_width*map_resolution
+
+	collision = 1
+	condition = True
+
+	while(condition):
+		rand_x = random.uniform(map_origin.position.x+0.5, x_range-0.5)
+		rand_y = random.uniform(map_origin.position.y+0.5, y_range-0.5)
+
+		rand_i = ceil ( (rand_x - map_origin.position.x)/map_resolution )
+		rand_j = ceil ( (rand_y - map_origin.position.y)/map_resolution )
+
+		collision = 0 #check for collision
+
+		for i in np.arange(rand_x-0.5, rand_x+0.5, 0.05):
+			for j in np.arange(rand_y-0.5, rand_y+0.5, 0.05):
+				if(sqrt((i - rand_x) ** 2 + (y - rand_y) ** 2) <= 0.5):
+					circle_i = int(ceil ( (i - map_origin.position.x)/map_resolution ))
+					circle_j = int(ceil ( (j - map_origin.position.y)/map_resolution ))
+					if(map_data[circle_i*map_width + circle_j] >= threshold):
+						#print(map_height)
+						#print(map_width)
+						#print(circle_i*map_width + circle_j)
+						collision = 1
+
+		n_x, n_y = nearest_vertex(rand_x, rand_y)
+		distance = sqrt( (rand_x - n_x)**2 + (rand_y - n_y)**2 )
+
+		if(rand_i >= map_height or rand_j >= map_width or collision == 1 or distance > max_distance):
+			condition = True
+		else:
+			condition = False
+
+	return rand_x, rand_y
+
+def nearest_vertex(x,y):
+	global node_start
+	global tree
+	min_dis = 9999999
+	nearest_x = 0
+	nearest_y = 0
+	for node in tree:
+		distance = sqrt( (node.name[0] - x)**2 + (node.name[1] - y)**2 )
+		if(min_dis > distance):
+			min_dis = distance
+			nearest_x = node.name[0]
+			nearest_y = node.name[1]
+
+	return nearest_x, nearest_y
+
+
+def add_vertex(x,y,p_x,p_y):
+	global node_start
+	global tree
+
+	data = [x,y]
+	for node in tree:
+		if(node.name[0] == p_x and node.name[1] == p_y):
+			new_node = Node(data, node)
+			break
+	tree.append(new_node)
+
+def find_path(route, node):
+	route.insert(0,node)
+	if node.parent is None:
+		return 1
+	find_path(route, node.parent)
+
+
+
+
+
+def talker():
+	#publish to channel
+	pub = rospy.Publisher('/trajectory', std_msgs.msg.Float64MultiArray, queue_size=10)
+
+	#initial node
+	rospy.init_node('RRT_node', anonymous=True)
+
+	#subscribe to channels
+	rospy.Subscriber('/map', OccupancyGrid, update_map)
+	rospy.Subscriber('/slam_out_pose', PoseStamped, update_pose)
+	rospy.Subscriber('/target_pose', std_msgs.msg.Float64MultiArray, update_target)# x,y,theta,mode
+
+	#define variables
+	rate_number = 1
+	rate = rospy.Rate(rate_number)
+
+	rate.sleep()
+
+
+	global x
+	global y
+	global theta
+	global target_x
+	global target_y
+	global node_start
+	global tree
+	#x=0
+	#y=0
+	#target_x = 1
+	#target_y = 1
+
+
+	#main iteration
+	while not rospy.is_shutdown():
+		tree = []
+		route = []
+		traj_data = []
+
+		data = [x,y]
+		node_start = Node(data)
+		tree.append(node_start)
+
+		while(True):
+			max_distance = 1
+			t_x, t_y = nearest_vertex(target_x, target_y)
+			if(sqrt( (target_x - t_x)**2 + (target_y - t_y)**2 ) < max_distance ):
+				add_vertex(target_x, target_y, t_x, t_y)
+				break
+
+			rand_x, rand_y = random_configuration()
+			n_x, n_y = nearest_vertex(rand_x, rand_y)
+			add_vertex(rand_x, rand_y, n_x, n_y)
+
+		#print("generated tree")
+		#for node in tree:
+			#print(node.name)
+
+		for node in tree:
+			if(node.name[0] == target_x and node.name[1] == target_y):
+				find_path(route, node)
+				break
+
+		print("target path")
+		for node in route:
+			traj_data.append(node.name[0])
+			traj_data.append(node.name[1])
+			print(node.name)
+
+		traj = std_msgs.msg.Float64MultiArray()
+		traj.data = traj_data
+		pub.publish(traj)
+		rospy.loginfo(traj)
+
+		rate.sleep()
+
+
+if __name__ == '__main__':
+	try:
+		talker()
+	except rospy.ROSInterruptException:
+		pass
