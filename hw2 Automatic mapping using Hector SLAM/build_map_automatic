@@ -1,0 +1,219 @@
+#!/usr/bin/env python
+import rospy
+from sensor_msgs.msg import LaserScan
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import OccupancyGrid
+
+from geometry_msgs.msg import Twist
+
+from gazebo_msgs.msg import LinkStates
+
+import tf
+import random
+import numpy as np
+from math import sqrt, sin, cos, atan2, ceil, floor
+
+scan = LaserScan()
+omap = OccupancyGrid()
+gtruth = LinkStates()
+gtruth_empty = gtruth
+
+def update_scan(data):
+	global scan
+	scan = data
+def update_omap(data):
+	global omap
+	omap = data
+
+def update_ground_truth(data):
+	global gtruth
+	gtruth = data
+
+
+def talker():
+	algorithm_end = 0
+	#publish to channel
+	pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+
+	#initial node
+	rospy.init_node('build_map_automatic', anonymous=True)
+
+	#subscribe to channels
+	rospy.Subscriber('/scan', LaserScan, update_scan)
+	rospy.Subscriber('/map', OccupancyGrid, update_omap)
+
+	rospy.Subscriber('/gazebo/link_states', LinkStates, update_ground_truth)
+
+	#define variables
+	rate_number = 1
+	rate = rospy.Rate(rate_number)
+	#K_x = 1.5
+	#K_z = 4
+
+	#use as queue .pop(0)
+	points_to_visit = []
+	#use as stack .pop()
+	route = []
+	#use as record, do not delete element
+	points_visited = []
+
+	car_name = "turtlebot3_burger::base_footprint"
+	car_name_index = 0
+
+	while(gtruth == gtruth_empty):
+		rate.sleep()
+
+	for i in range(0, 100):
+		if gtruth.name[i] == car_name:
+			print(gtruth.name[i])
+			car_name_index = i
+			break
+
+	#main iteration
+	while not rospy.is_shutdown():
+		#main loop
+		#get ground truth data
+
+		new_points_discovered = 0
+
+		car_x = gtruth.pose[car_name_index].position.x
+		car_y = gtruth.pose[car_name_index].position.y
+
+		index_i =  ceil ( (car_x - omap.info.origin.position.x)/omap.info.resolution )
+		index_j =  ceil ( (car_y - omap.info.origin.position.y)/omap.info.resolution )
+
+		explicit_quat = [gtruth.pose[car_name_index].orientation.x, gtruth.pose[car_name_index].orientation.y,
+		 gtruth.pose[car_name_index].orientation.z, gtruth.pose[car_name_index].orientation.w]
+		euler = tf.transformations.euler_from_quaternion(explicit_quat)
+
+		car_angle = euler[2]
+
+		#keep a record of visited points
+		route.append((car_x, car_y))
+		if((index_i, index_j) not in points_visited):
+			points_visited.append((index_i, index_j))
+
+		#search lidar scan data, find gap
+		#use as queue .pop(0)
+		gaps = []
+		m = int( floor( (scan.angle_max - scan.angle_min)/scan.angle_increment ) )
+
+		for i in range(1, m):
+			scan_angle = car_angle + scan.angle_min + i*scan.angle_increment
+			gap_distance = scan.ranges[i] - scan.ranges[i-1] #gap between current and previous scan
+
+			if(gap_distance > 0.5 and scan.ranges[i]!=float('inf') and scan.ranges[i-1]!=float('inf')):
+				point_1 = ( car_x + scan.ranges[i]*cos(scan_angle), 
+							car_y + scan.ranges[i]*sin(scan_angle) )
+				point_2 = ( car_x + scan.ranges[i-1]*cos(scan_angle - scan.angle_increment), 
+							car_y + scan.ranges[i-1]*sin(scan_angle - scan.angle_increment) )
+				point_mid = ( (point_1[0]+point_2[0])/2, (point_1[1]+point_2[1])/2, i )
+
+				gaps.append(point_mid)
+
+
+		#find all possible points to visit from current position, midpoint of 2 gaps
+		while(len(gaps) >= 2):
+			gap_a = gaps.pop(0)
+			gap_b = gaps[0]
+
+			next_point = ( (gap_a[0]+gap_b[0])/2, (gap_a[1]+gap_b[1])/2, int( (gap_a[2] + gap_b[2])/2 ) )
+			i = ceil ( (next_point[0] - omap.info.origin.position.x)/omap.info.resolution )
+			j = ceil ( (next_point[1] - omap.info.origin.position.y)/omap.info.resolution )
+			next_index = (i, j)
+
+			#print(i,j)
+			#print(next_index[0],next_index[1])
+
+			if( next_index in points_visited ): #discard visited points
+				continue
+			#if( omap.data[int(i)*omap.info.width + int(j) ) != -1 ):
+				#continue
+
+			object_distance = scan.ranges[next_point[2]]
+			point_distance = sqrt( (next_point[0]-car_x)**2 + (next_point[1]-car_y)**2 )
+
+			if(point_distance < object_distance + 0.05 and point_distance > 1):
+				points_to_visit.append(next_point)
+				new_points_discovered = new_points_discovered + 1
+
+
+		print("points to visit:", points_to_visit)
+		print("points visited: ", points_visited)
+		#visit
+		if not points_to_visit:
+			route.pop()
+			temp = route.pop()
+			points_to_visit.append(temp)
+
+		if (new_points_discovered == 0):
+			points_to_visit.pop()
+
+		target = points_to_visit[-1]
+
+
+		#while(point_distance >= object_distance + 0.2): #obstacle
+			#points_to_visit.insert(0,target)
+
+			#target = points_to_visit.pop()
+			#if(target == start):
+				#if not route:
+					#algorithm_end = 1
+				#else:
+					#route.pop()
+					#points_to_visit.append(route.pop())
+					#target = points_to_visit.pop()
+					#break
+
+			#object_distance = scan.ranges[target[2]]
+			#point_distance = sqrt( (target[0]-car_x)**2 + (target[1]-car_y)**2 )
+
+
+
+		K_x = 0.1
+		K_z = 0.2
+
+		Error_angle = atan2( (target[1]-car_y), (target[0]-car_x) ) - car_angle
+		Error_position = sqrt( (target[0]-car_x)**2 + (target[1]-car_y)**2 )
+
+		while(abs(Error_angle) > 0.03):
+			print("target", target[0], target[1])
+			print("position", car_x, car_y)
+			print("Error angle", Error_angle)
+			explicit_quat = [gtruth.pose[car_name_index].orientation.x, gtruth.pose[car_name_index].orientation.y,
+		 					gtruth.pose[car_name_index].orientation.z, gtruth.pose[car_name_index].orientation.w]
+			euler = tf.transformations.euler_from_quaternion(explicit_quat)
+			car_angle = euler[2]
+			Error_angle = atan2( (target[1]-car_y), (target[0]-car_x) ) - car_angle
+
+			move_cmd = Twist()
+			move_cmd.angular.z = K_z*Error_angle
+			pub.publish(move_cmd)
+			rospy.loginfo(move_cmd)
+			rate.sleep()
+
+		while(Error_position > 0.4):
+			car_x = gtruth.pose[car_name_index].position.x
+			car_y = gtruth.pose[car_name_index].position.y
+
+			Error_position = sqrt( (target[0]-car_x)**2 + (target[1]-car_y)**2 )
+
+			print("target", target[0], target[1])
+			print("position", car_x, car_y)
+
+			move_cmd = Twist()
+			move_cmd.linear.x = K_x*Error_position
+			pub.publish(move_cmd)
+			rospy.loginfo(move_cmd)
+			rate.sleep()
+
+		if(algorithm_end == 1):
+			break
+
+
+
+if __name__ == '__main__':
+	try:
+		talker()
+	except rospy.ROSInterruptException:
+		pass
