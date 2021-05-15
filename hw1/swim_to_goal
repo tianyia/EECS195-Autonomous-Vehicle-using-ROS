@@ -1,0 +1,54 @@
+#!/usr/bin/env python
+# encoding=utf8
+import rospy
+from geometry_msgs.msg import Twist
+from turtlesim.msg import Pose
+
+import random
+import numpy as np
+from math import sqrt, atan2
+
+pose = Pose()
+
+def callback(data):
+	global pose
+	pose = data
+	#pose.x = data.x
+	#pose.y = data.y
+
+def talker():
+	pub = rospy.Publisher('/turtle1/cmd_vel', Twist, queue_size=10)
+	rospy.init_node('swim_node', anonymous=True)
+	rospy.Subscriber('/turtle1/pose', Pose, callback)
+
+	rate_number = 4
+	rate = rospy.Rate(rate_number)
+	K_x = 1.5
+	K_z = 4
+
+	#while not rospy.is_shutdown():
+	while not rospy.is_shutdown():
+		x_goal = float( raw_input("Please enter x_goal:\n") )
+		y_goal = float( raw_input("Please enter y_goal:\n") )
+		
+		Error_position = 9999
+
+		while Error_position >= 0.5:
+			Error_position = sqrt( (x_goal - pose.x)*(x_goal - pose.x) + (y_goal - pose.y)*(y_goal - pose.y) )
+			Error_angle = atan2(y_goal - pose.y, x_goal - pose.x)
+
+			move_cmd = Twist()
+			move_cmd.linear.x = K_x*Error_position
+			move_cmd.angular.z = K_z*Error_angle
+
+			rospy.loginfo(move_cmd)
+			pub.publish(move_cmd)
+
+			rate.sleep()
+
+
+if __name__ == '__main__':
+	try:
+		talker()
+	except rospy.ROSInterruptException:
+		pass
